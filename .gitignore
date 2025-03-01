@@ -1,4 +1,4 @@
-/wb-bot-frontend/node_modules
+wb-bot-frontend/node_modules/
 /wb-bot-backend/.env
 /wb-bot-frontend/.env
 /wb-bot-backend/venv

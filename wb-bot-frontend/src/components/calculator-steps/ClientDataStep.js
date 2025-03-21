@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
-import { Grid, Paper, TextField } from '@mui/material';
+import { Grid, Paper, TextField, Alert, Typography, Box } from '@mui/material';
 
 const StyledPaper = styled(Paper)`
   padding: 1.5rem;
@@ -12,7 +12,46 @@ const FormField = styled.div`
   margin-bottom: 1.5rem;
 `;
 
-const ClientDataStep = ({ formData, updateFormData }) => {
+const ClientDataStep = ({ formData, updateFormData, onValidationChange, shouldValidate, showErrors }) => {
+  const [errors, setErrors] = useState({});
+
+  // Валидация данных
+  const validate = () => {
+    const newErrors = {};
+    const phoneRegex = /^\+?[0-9\s\-()]{10,15}$/;
+
+    // Обязательное поле - имя клиента
+    if (!formData.clientName) {
+      newErrors.clientName = 'Введите имя контактного лица';
+    }
+
+    // Обязательное поле - телефон
+    if (!formData.phoneNumber) {
+      newErrors.phoneNumber = 'Введите номер телефона';
+    } else if (!phoneRegex.test(formData.phoneNumber)) {
+      newErrors.phoneNumber = 'Введите корректный номер телефона';
+    }
+    
+    // Компания не является обязательной
+    
+    setErrors(newErrors);
+    const isValid = Object.keys(newErrors).length === 0;
+    
+    // Уведомляем родительский компонент о результате валидации
+    if (onValidationChange) {
+      onValidationChange(isValid);
+    }
+    
+    return isValid;
+  };
+
+  // Вызываем валидацию при изменении shouldValidate или данных формы
+  useEffect(() => {
+    if (shouldValidate) {
+      validate();
+    }
+  }, [shouldValidate, formData]);
+
   const handleChange = (field) => (event) => {
     updateFormData({
       [field]: event.target.value
@@ -21,19 +60,8 @@ const ClientDataStep = ({ formData, updateFormData }) => {
 
   return (
     <StyledPaper>
+      <Typography variant="h5" style={{ marginBottom: '1.5rem' }}>Контактные данные</Typography>
       <Grid container spacing={3}>
-        <Grid item xs={12}>
-          <FormField>
-            <TextField
-              label="Название компании"
-              value={formData.companyName || ''}
-              onChange={handleChange('companyName')}
-              fullWidth
-              required
-            />
-          </FormField>
-        </Grid>
-
         <Grid item xs={12}>
           <FormField>
             <TextField
@@ -42,32 +70,23 @@ const ClientDataStep = ({ formData, updateFormData }) => {
               onChange={handleChange('clientName')}
               fullWidth
               required
+              error={showErrors && !!errors.clientName}
+              helperText={showErrors && errors.clientName}
             />
           </FormField>
         </Grid>
 
-        <Grid item xs={12} md={6}>
-          <FormField>
-            <TextField
-              label="Email"
-              type="email"
-              value={formData.email || ''}
-              onChange={handleChange('email')}
-              fullWidth
-              required
-            />
-          </FormField>
-        </Grid>
-
-        <Grid item xs={12} md={6}>
+        <Grid item xs={12}>
           <FormField>
             <TextField
               label="Телефон"
-              value={formData.phone || ''}
-              onChange={handleChange('phone')}
+              value={formData.phoneNumber || ''}
+              onChange={handleChange('phoneNumber')}
               fullWidth
               required
               placeholder="+7 (___) ___-__-__"
+              error={showErrors && !!errors.phoneNumber}
+              helperText={showErrors && errors.phoneNumber}
             />
           </FormField>
         </Grid>
@@ -75,32 +94,20 @@ const ClientDataStep = ({ formData, updateFormData }) => {
         <Grid item xs={12}>
           <FormField>
             <TextField
-              label="Стоимость груза"
-              type="number"
-              value={formData.cargoValue || ''}
-              onChange={handleChange('cargoValue')}
+              label="Компания"
+              value={formData.company || ''}
+              onChange={handleChange('company')}
               fullWidth
-              required
-              InputProps={{
-                endAdornment: '₽'
-              }}
-            />
-          </FormField>
-        </Grid>
-
-        <Grid item xs={12}>
-          <FormField>
-            <TextField
-              label="Комментарии"
-              value={formData.comments || ''}
-              onChange={handleChange('comments')}
-              fullWidth
-              multiline
-              rows={4}
             />
           </FormField>
         </Grid>
       </Grid>
+      
+      {showErrors && Object.keys(errors).length > 0 && (
+        <Alert severity="error" style={{ marginTop: '1rem' }}>
+          Пожалуйста, заполните все обязательные поля
+        </Alert>
+      )}
     </StyledPaper>
   );
 };

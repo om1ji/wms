@@ -22,7 +22,57 @@ callbacks.bot = bot
 dp.include_router(callbacks.router)
 dp.include_router(commands.router)
 
+class OrderData:
+    order_id: str
+    telegram_user_id: str
+    warehouse_name: str
+    date: str
+    box_size: str | None = None
+    box_count: str | None = None
+    pallet_count: str | None = None
+    pallet_weight: str | None = None
+    company_name: str | None = None
+    client_name: str | None = None
+    client_phone: str | None = None
+    cost: str = None
+    delivery_price: str = None
+    comments: str | None = None
+    additional_services: str | None = None
+    
 app = FastAPI()
+
+def message_builder(order_data: OrderData) -> str:
+    text = f"""
+    Заказ #{order_data.order_id}
+
+📦 *Склад:* {order_data.warehouse_name}
+📅 *Дата:* {order_data.date}
+    """
+    if order_data.box_size:
+        text += f"📏 *Размер коробок:* {order_data.box_size}\n"
+        text += f"🔢 *Количество коробок:* {order_data.box_count}\n"
+        
+    if order_data.pallet_count:
+        text += f"🎁 *Количество паллетов:* {order_data.pallet_count}\n"
+        text += f"🎁 *Вес паллеты:* {order_data.pallet_weight}\n"
+        
+    if order_data.additional_services:
+        text += f"🔧 *Дополнительные услуги:* {order_data.additional_services}\n"
+        
+        
+    text += f"""
+    🏢 *Компания:* {order_data.company_name}
+👨‍💼 *Контактное лицо:* {order_data.client_name} {order_data.client_phone}
+    """
+        
+    text += f"💰 *Объявленная стоимость:* {order_data.cost} ₽"
+    text += f"💰 *Стоимость доставки:* {order_data.delivery_price} ₽"
+    
+    if order_data.comments:
+        text += f"📝 *Комментарии:* {order_data.comments}\n"
+        
+    return text
+
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
@@ -30,27 +80,7 @@ async def command_start_handler(message: Message) -> None:
 
 async def send_order_notification(order_data):
     chat_id = os.getenv("TELEGRAM_GROUP_ID")
-    
-    text = f"""
-🚚 *Новый заказ!* 🚚
-
-📦 *Склад:* {order_data.get('warehouse_name', 'Не указан')}
-
-📏 *Размер коробок:* {order_data.get('box_size', 'Не указан')}
-🔢 *Количество коробок:* {order_data.get('box_count', 'Не указано')}
-
-🎁 *Количество паллетов:* {order_data.get('pallet_count', 'Не указано')}
-🎁 *Вес паллеты:* {order_data.get('pallet_weight', 'Не указано')}
-
-🏢 *Компания:* {order_data.get('company_name', 'Не указана')}
-👨‍💼 *Контактное лицо:* {order_data.get('client_name', 'Не указан')}
-📧 *Email:* {order_data.get('client_email', 'Не указан')}
-📱 *Телефон:* {order_data.get('client_phone', 'Не указан')}
-💰 *Стоимость груза:* {order_data.get('cost', 'Не указана')} ₽
-
-📝 *Комментарии:* {order_data.get('comments', 'Нет комментариев')}
-    """
-    
+    text = message_builder(order_data)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ Принять", callback_data=f"order_accept_{order_data.get('order_id')}_{order_data.get('telegram_user_id')}"),

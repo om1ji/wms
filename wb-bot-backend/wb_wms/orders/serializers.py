@@ -1,7 +1,13 @@
 from rest_framework import serializers
-from .models import Order, Warehouse, Container, Marketplace, City, User
+from .models import Order, Warehouse, Container, Marketplace, City, User, Pricing, AdditionalService
 from rest_framework.response import Response
 from rest_framework import status
+from decimal import Decimal
+from django.db import connection
+from django.utils import timezone
+import uuid
+import json
+import datetime
 
 class MarketplaceSerializer(serializers.ModelSerializer):
     class Meta:
@@ -29,7 +35,7 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = '__all__'
-        read_only_fields = ('created_at', 'status_updated_at')
+        read_only_fields = ('created_at',)
 
     def get_containers_info(self, obj):
         if isinstance(obj, Order):
@@ -56,72 +62,205 @@ class OrderSerializer(serializers.ModelSerializer):
     def to_internal_value(self, data):
         return data
 
+    def calculate_order_price(self, data):
+        """Рассчитать стоимость заказа"""
+        total_price = Decimal('0.00')
+        
+        # Извлекаем данные
+        delivery_data = data.get('delivery', {})
+        cargo_type_data = data.get('cargoType', {})
+        additional_services = data.get('additionalServices', [])
+        
+        # 1. Расчет стоимости доставки
+        if delivery_data and 'warehouse' in delivery_data:
+            warehouse_id = delivery_data['warehouse']
+            try:
+                # Ищем тариф доставки для выбранного склада
+                delivery_pricing = Pricing.objects.filter(
+                    pricing_type='delivery',
+                    warehouse__id=warehouse_id,
+                    is_active=True
+                ).first()
+                
+                if delivery_pricing:
+                    total_price += delivery_pricing.base_price
+            except Exception:
+                # Если тариф не найден, используем базовую стоимость
+                total_price += Decimal('2000.00')
+        
+        # 2. Расчет стоимости по типу груза
+        if cargo_type_data:
+            # Обработка коробок (всегда обрабатываем, если они есть)
+            if 'quantities' in cargo_type_data and 'Коробка' in cargo_type_data['quantities'] and int(cargo_type_data['quantities']['Коробка']) > 0:
+                # Определяем размер коробки
+                box_size = None
+                if 'selectedBoxSizes' in cargo_type_data and cargo_type_data['selectedBoxSizes']:
+                    box_size = cargo_type_data['selectedBoxSizes'][0]
+                
+                # Получаем количество
+                quantity = int(cargo_type_data['quantities']['Коробка'])
+                
+                if quantity > 0:
+                    # Ищем тариф для коробок указанного размера
+                    box_pricing = None
+                    if box_size:
+                        box_pricing = Pricing.objects.filter(
+                            pricing_type='box',
+                            specification=box_size,
+                            is_active=True
+                        ).first()
+                    
+                    # Если тариф для указанного размера не найден, ищем любой тариф для коробок
+                    if not box_pricing:
+                        box_pricing = Pricing.objects.filter(
+                            pricing_type='box',
+                            is_active=True
+                        ).first()
+                    
+                    if box_pricing:
+                        # Базовая цена + (цена за единицу * количество)
+                        box_cost = box_pricing.base_price + (box_pricing.unit_price * Decimal(quantity))
+                        total_price += box_cost
+                    else:
+                        # Если тариф не найден, используем базовую стоимость
+                        total_price += Decimal('500.00') * Decimal(quantity)
+            
+            # Обработка паллет (всегда обрабатываем, если они есть)
+            if 'quantities' in cargo_type_data and 'Паллета' in cargo_type_data['quantities'] and int(cargo_type_data['quantities']['Паллета']) > 0:
+                # Определяем вес паллеты
+                pallet_weight = None
+                if 'selectedPalletWeights' in cargo_type_data and cargo_type_data['selectedPalletWeights']:
+                    pallet_weight = cargo_type_data['selectedPalletWeights'][0]
+                
+                # Получаем количество
+                quantity = int(cargo_type_data['quantities']['Паллета'])
+                
+                if quantity > 0:
+                    # Ищем тариф для паллет указанного веса
+                    pallet_pricing = None
+                    if pallet_weight:
+                        pallet_pricing = Pricing.objects.filter(
+                            pricing_type='pallet',
+                            specification=pallet_weight,
+                            is_active=True
+                        ).first()
+                    
+                    # Если тариф для указанного веса не найден, ищем любой тариф для паллет
+                    if not pallet_pricing:
+                        pallet_pricing = Pricing.objects.filter(
+                            pricing_type='pallet',
+                            is_active=True
+                        ).first()
+                    
+                    if pallet_pricing:
+                        # Базовая цена + (цена за единицу * количество)
+                        pallet_cost = pallet_pricing.base_price + (pallet_pricing.unit_price * Decimal(quantity))
+                        total_price += pallet_cost
+                    else:
+                        # Если тариф не найден, используем базовую стоимость
+                        total_price += Decimal('2000.00') * Decimal(quantity)
+        
+        # 3. Расчет стоимости дополнительных услуг
+        for service_id in additional_services:
+            # Проверяем, есть ли такая услуга в новой таблице AdditionalService
+            service = AdditionalService.objects.filter(
+                id=service_id,
+                is_active=True
+            ).first()
+            
+            if service:
+                total_price += service.price
+            else:
+                # Если не нашли в новой модели, ищем в старой системе тарифов
+                service_pricing = Pricing.objects.filter(
+                    id=service_id,
+                    is_active=True
+                ).first()
+                
+                if service_pricing:
+                    total_price += service_pricing.base_price
+        
+        # Округляем до 2 знаков после запятой
+        return total_price.quantize(Decimal('0.01'))
+
     def create(self, validated_data):
         try:
-            # Извлекаем данные
+            # 1. Получаем необходимые данные из validated_data
             delivery_data = validated_data.get('delivery', {})
             cargo_type_data = validated_data.get('cargoType', {})
             client_data = validated_data.get('clientData', {})
-
-            # Проверяем наличие необходимых данных
-            if not delivery_data or not cargo_type_data or not client_data:
-                raise serializers.ValidationError("Missing required data")
-
-            # Создаем или получаем связанные объекты
-            try:
-                warehouse = Warehouse.objects.get(id=delivery_data['warehouse'])
-            except Warehouse.DoesNotExist:
-                raise serializers.ValidationError(f"Warehouse with id {delivery_data['warehouse']} not found")
-
-            # Создаем или получаем пользователя
-            user, _ = User.objects.get_or_create(
-                email=client_data['email'],
-                defaults={
-                    'username': client_data['email'],
-                    'phone': client_data['phone'],
-                    'company_name': client_data['companyName'],
-                    'telegram_id': ''  # Добавляем пустое значение для telegram_id
-                }
-            )
-
-            # Создаем заказ
+            additional_services = validated_data.get('additionalServices', [])
+            pickup_address = validated_data.get('pickupAddress', '')
+            
+            # 2. Получаем ID склада
+            warehouse = None
+            if delivery_data and 'warehouse' in delivery_data:
+                warehouse_id = delivery_data['warehouse']
+                try:
+                    warehouse = Warehouse.objects.get(id=warehouse_id)
+                except Warehouse.DoesNotExist:
+                    pass
+            
+            # 3. Определяем тип груза и контейнера
+            cargo_type = 'mixed'
+            container_type = None
+            box_count = 0
+            pallet_count = 0
+            
+            # Обработка выбранных типов груза
+            if 'type' in cargo_type_data:
+                primary_cargo_type = cargo_type_data['type']
+                if primary_cargo_type == 'Коробка':
+                    cargo_type = 'box'
+                    container_type = cargo_type_data.get('selectedBoxSizes', [''])[0] if cargo_type_data.get('selectedBoxSizes') else None
+                elif primary_cargo_type == 'Паллета':
+                    cargo_type = 'pallet'
+                    container_type = cargo_type_data.get('selectedPalletWeights', [''])[0] if cargo_type_data.get('selectedPalletWeights') else None
+            
+            # Заполняем количество коробок и паллет
+            if 'quantities' in cargo_type_data:
+                if 'Коробка' in cargo_type_data['quantities']:
+                    box_count = int(cargo_type_data['quantities']['Коробка'])
+                if 'Паллета' in cargo_type_data['quantities']:
+                    pallet_count = int(cargo_type_data['quantities']['Паллета'])
+            
+            # 4. Рассчитываем стоимость заказа
+            total_price = self.calculate_order_price(validated_data)
+            
+            # 5. Создаем заказ через ORM
             order = Order.objects.create(
-                user_id=user,
-                warehouse_id=warehouse,
-                cost=float(client_data['cargoValue']),
-                status="Создан",
-                additional_info=client_data.get('comments', '')
+                status='new',
+                total_price=total_price,
+                warehouse=warehouse,
+                cargo_type=cargo_type,
+                container_type=container_type,
+                box_count=box_count,
+                pallet_count=pallet_count,
+                client_name=client_data.get('name', ''),
+                phone_number=client_data.get('phone', ''),
+                company=client_data.get('company', ''),
+                email=client_data.get('email', ''),
+                pickup_address=pickup_address
             )
-
-            # Создаем контейнеры
-            for container_type in cargo_type_data.get('selectedTypes', []):
-                # Безопасно получаем размер коробки или вес паллеты
-                box_size = None
-                pallet_weight = None
-                
-                if container_type == "Коробка":
-                    selected_box_sizes = cargo_type_data.get('selectedBoxSizes', [])
-                    box_size = selected_box_sizes[0] if selected_box_sizes else None
-                elif container_type == "Паллета":
-                    selected_pallet_weights = cargo_type_data.get('selectedPalletWeights', [])
-                    pallet_weight = selected_pallet_weights[0] if selected_pallet_weights else None
-                
-                quantity = cargo_type_data.get('quantities', {}).get(container_type, 1)
-
-                container = Container.objects.create(
-                    name=f"Container for {client_data['email']}",
-                    container_type=container_type,
-                    box_size=box_size,
-                    pallet_weight=pallet_weight,
-                    quantity=quantity
-                )
-                order.containers.add(container)
-
+            
+            # 6. Добавляем дополнительные услуги, если они есть
+            if additional_services:
+                for service_id in additional_services:
+                    try:
+                        service = AdditionalService.objects.get(id=service_id)
+                        order.services.add(service)
+                    except Exception as e:
+                        print(f"Error adding service {service_id} to order {order.id}: {e}")
+            
+            # 7. Возвращаем созданный заказ
             return order
-
+            
         except Exception as e:
-            print(f"Error creating order: {str(e)}")
-            raise serializers.ValidationError(f"Error creating order: {str(e)}")
+            import traceback
+            print(f"Error creating order: {e}")
+            print(traceback.format_exc())
+            print(f"Validated data: {validated_data}")
+            raise serializers.ValidationError(f"Failed to create order: {e}")
     
     def update(self, instance, validated_data):
         # Обновляем только статус, если он передан
@@ -158,5 +297,25 @@ class ContainerSerializer(serializers.ModelSerializer):
         containers = Container.objects.all()
         serializer = self.serializer_class(containers, many=True)
         return Response(serializer.data)
+    
+class PricingSerializer(serializers.ModelSerializer):
+    warehouse_name = serializers.CharField(source='warehouse.name', read_only=True)
+    
+    class Meta:
+        model = Pricing
+        fields = ['id', 'name', 'pricing_type', 'specification', 
+                  'warehouse', 'warehouse_name', 'base_price', 'unit_price', 
+                  'is_active', 'created_at', 'updated_at']
+        read_only_fields = ('created_at', 'updated_at')
+
+class AdditionalServiceSerializer(serializers.ModelSerializer):
+    """Сериализатор для дополнительных услуг"""
+    service_type_display = serializers.CharField(source='get_service_type_display', read_only=True)
+    
+    class Meta:
+        model = AdditionalService
+        fields = ['id', 'name', 'price', 'service_type', 'service_type_display', 
+                  'requires_location', 'description', 'is_active', 'created_at']
+        read_only_fields = ('created_at',)
     
     

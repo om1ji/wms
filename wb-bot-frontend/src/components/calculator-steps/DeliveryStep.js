@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import styled from 'styled-components';
 import { 
   Grid, 
@@ -9,6 +9,8 @@ import {
   Paper, 
   Typography,
   CircularProgress,
+  FormHelperText,
+  Alert
 } from '@mui/material';
 
 const StyledPaper = styled(Paper)`
@@ -28,7 +30,40 @@ const LoadingWrapper = styled.div`
   padding: 2rem;
 `;
 
-const DeliveryStep = ({ formData, updateFormData, availableWarehouses }) => {
+const DeliveryStep = ({ formData, updateFormData, availableWarehouses, onValidationChange, shouldValidate, showErrors }) => {
+  const [errors, setErrors] = useState({});
+
+  // Валидация данных
+  const validate = () => {
+    const newErrors = {};
+    
+    if (!formData.marketplace) {
+      newErrors.marketplace = 'Выберите маркетплейс';
+    }
+    
+    if (!formData.warehouse) {
+      newErrors.warehouse = 'Выберите склад';
+    }
+    
+    setErrors(newErrors);
+    
+    const isValid = Object.keys(newErrors).length === 0;
+    
+    // Уведомляем родительский компонент о результате валидации
+    if (onValidationChange) {
+      onValidationChange(isValid);
+    }
+    
+    return isValid;
+  };
+
+  // Вызываем валидацию при изменении shouldValidate или formData
+  useEffect(() => {
+    if (shouldValidate) {
+      validate();
+    }
+  }, [shouldValidate, formData]);
+
   const handleChange = (field) => (event) => {
     const value = event.target.value;
     
@@ -80,9 +115,15 @@ const DeliveryStep = ({ formData, updateFormData, availableWarehouses }) => {
         Выберите маркетплейс, склад и дату доставки
       </SectionTitle>
 
+      {showErrors && (errors.marketplace || errors.warehouse) && (
+        <Alert severity="error" style={{ marginBottom: '1rem' }}>
+          Пожалуйста, заполните все обязательные поля
+        </Alert>
+      )}
+
       <Grid container spacing={3}>
         <Grid item xs={12} md={6}>
-          <FormControl fullWidth>
+          <FormControl fullWidth error={showErrors && !!errors.marketplace}>
             <InputLabel>Маркетплейс</InputLabel>
             <Select
               value={formData.marketplace}
@@ -95,11 +136,12 @@ const DeliveryStep = ({ formData, updateFormData, availableWarehouses }) => {
                 </MenuItem>
               ))}
             </Select>
+            {showErrors && errors.marketplace && <FormHelperText>{errors.marketplace}</FormHelperText>}
           </FormControl>
         </Grid>
 
         <Grid item xs={12} md={6}>
-          <FormControl fullWidth>
+          <FormControl fullWidth error={showErrors && !!errors.warehouse}>
             <InputLabel>Склад</InputLabel>
             <Select
               value={formData.warehouse}
@@ -113,6 +155,7 @@ const DeliveryStep = ({ formData, updateFormData, availableWarehouses }) => {
                 </MenuItem>
               ))}
             </Select>
+            {showErrors && errors.warehouse && <FormHelperText>{errors.warehouse}</FormHelperText>}
           </FormControl>
         </Grid>
       </Grid>
